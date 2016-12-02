@@ -24,6 +24,28 @@ def index_element_map(arr):
         index_to_element[index] = element
     return index_to_element
 
+def label_trim(full_pw_label):
+    """ Quick code to make the pathway labels shorter. Not especially
+        elegant.
+    """
+    if full_pw_label[0:2] == "GO":
+        trim_idx = full_pw_label.index(":")
+        if trim_idx != INV:
+            return full_pw_label[trim_idx+1:] + " - GO"
+        else:
+            return full_pw_label
+    else:
+        to_remove = "- Pseudomonas aeruginosa PAO1"
+        pw_trim = full_pw_label.split(" ", 1)
+        if len(pw_trim) > 1:
+            pw_trim = pw_trim[1]
+        if to_remove in pw_trim:
+            return pw_trim[0:pw_trim.index(to_remove)] + "PA01"
+        elif ":" in full_pw_label:
+            return pw_trim
+        else:
+            return full_pw_label.strip()
+
 def load_weight_matrix(weight_file, gene_ids):
     """Reads in the ADAGE model weight matrix.
     
@@ -41,6 +63,16 @@ def load_weight_matrix(weight_file, gene_ids):
     weight_matrix["gene_ids"] = pd.Series(gene_ids, index=weight_matrix.index)
     weight_matrix.set_index("gene_ids", inplace=True)
     return weight_matrix
+
+def read_significant_pathways_file(path_to_file):
+    node_pathway_df = pd.read_table(path_to_file,
+                                    sep="\t",
+                                    header=0,
+                                    usecols=["node", "side", "pathway"])
+    node_pathway_df["pathway"] = node_pathway_df["pathway"].apply(
+        lambda x: label_trim(x))
+    node_pathway_df = node_pathway_df.sort_values(by=["node", "side"])
+    return node_pathway_df
 
 def replace_zeros(arr, default_min_value):
 	"""Substitute 0s in the list with a near-zero value.

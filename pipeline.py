@@ -4,7 +4,7 @@ import multiprocessing
 import os
 import pdb
 import sys
-import time
+from time import time
 
 from joblib import Parallel, delayed
 import numpy as np
@@ -37,24 +37,38 @@ if __name__ == "__main__":
 
 	pathway_definitions_map = utils.get_pathway_definitions_map(pathway_definitions)
 
+	t_o = time()
 	np.seterr(all="raise")
 	n_cores = multiprocessing.cpu_count()
 	with Parallel(n_jobs=n_cores-1) as parallel:
+		i = 0
 		for weight_file in os.listdir(weight_dir):
 			full_filepath = os.path.join(weight_dir, weight_file)
 			weight_matrix = utils.load_weight_matrix(full_filepath, gene_ids)
 			significant_pathways_df = pd.DataFrame([], columns=["node", "pathway", "p-value", "side", "padjust"])
+			results = parallel(delayed(mie.single_node_pathway_enrichment)
+							  (weight_matrix[node], STD_ABOVE, len(gene_ids), union_pathway_genes, pathway_definitions_map)
+			                   for node in weight_matrix)
+			'''
 			for node in weight_matrix:
 				node_df = mie.single_node_pathway_enrichment(
 					weight_matrix[node], STD_ABOVE, len(gene_ids), union_pathway_genes, pathway_definitions_map)
 				#pdb.set_trace()
 				node_df.loc[:,"node"] = pd.Series([node] * len(node_df.index), index=node_df.index)
 				significant_pathways_df = pd.concat([significant_pathways_df, node_df], axis=0)
+			'''
+			for node, node_df in enumerate(results):
+				node_df.loc[:,"node"] = pd.Series([node] * len(node_df.index), index=node_df.index)
+				significant_pathways_df = pd.concat([significant_pathways_df, node_df], axis=0)
 			significant_pathways_df.reset_index(drop=True, inplace=True)
+			
 			print(significant_pathways_df[:5])
 			print(significant_pathways_df[:-5])
-			print(significant_pathways_df.index.get_duplicates())
 			#results = parallel(delayed(single_node_pathway_enrichment)(weight_matrix[node])
 			#                   for node in weight_matrix)
-			break
+			i += 1
+			if i == 3:
+				break
+	t_f = time() - t_o
+	print("{0} models took {1} seconds to run on {2} cores.".format(i, t_f, n_cores-1))
 
