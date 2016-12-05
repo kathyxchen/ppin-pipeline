@@ -51,7 +51,7 @@ Options:
 
 import multiprocessing
 import os
-import pdb
+import pdb  # TODO: remove when script is finalized.
 import sys
 from time import time
 
@@ -62,6 +62,8 @@ import pandas as pd
 
 import mie
 import utils
+
+REPLACE_WITH = "SigPathway"
 
 class ProcessModel:
 
@@ -75,15 +77,16 @@ class ProcessModel:
 		self.std_signature = std
 		self.use_all_genes = use_all_genes
 
-	def process(self, weight_file, models_directory):
-		full_filepath = os.path.join(models_directory, weight_file)
+	def process(self, models_directory, current_model):
+		full_filepath = os.path.join(models_directory, current_model)
 		weight_matrix = utils.load_weight_matrix(full_filepath, self.gene_ids)
 		significant_pathways_df = pd.DataFrame(
 			[], columns=["node", "pathway", "p-value", "side", "padjust"])
 		for node in weight_matrix:
 			node_df = mie.single_node_pathway_enrichment(
 				weight_matrix[node], self.std_signature, len(self.gene_ids),
-				self.union_pathway_genes, self.pathway_definitions_map)
+				self.union_pathway_genes, self.pathway_definitions_map,
+				self.use_all_genes)
 			node_df.loc[:,"node"] = pd.Series([node] * len(node_df.index), index=node_df.index)
 			significant_pathways_df = pd.concat([significant_pathways_df, node_df], axis=0)
 		significant_pathways_df.reset_index(drop=True, inplace=True)
@@ -124,13 +127,16 @@ if __name__ == "__main__":
 	np.seterr(all="raise")
 	with Parallel(n_jobs=n_cores) as parallel:
 		results = parallel(
-			delayed(process_model.process)(weight_file, models_directory)
-			for weight_file in os.listdir(models_directory))
+			delayed(process_model.process)(models_directory, model)
+			for model in os.listdir(models_directory))
 	t_f = time() - t_o
 	print("{0} models took {1} seconds to run on {2} cores.".format(
 		len(results), t_f, n_cores))
-	for weight_file, significant_pathways_df in results:
-		output_filename = weight_file.replace(substring_to_replace, "SigPathway")
+
+	# Nodes in each model are enriched for certain pathways.
+	# Write this information to the output directory.
+	for model, significant_pathways_df in results:
+		output_filename = model.replace(substring_to_replace, REPLACE_WITH)
 		output_path = os.path.join(output_directory, output_filename)
 		significant_pathways_df.to_csv(
 			path_or_buf=output_path, sep="\t", index=False)
