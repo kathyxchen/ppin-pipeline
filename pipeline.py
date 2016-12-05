@@ -63,7 +63,7 @@ import pandas as pd
 import mie
 import utils
 
-class ProcessModels:
+class ProcessModel:
 
 	def __init__(gene_ids, pathway_definitions_map, union_pathway_genes,
 				 std, use_all_genes):
@@ -75,7 +75,7 @@ class ProcessModels:
 		self.std_signature = std
 		self.use_all_genes = use_all_genes
 
-	def process_model(self, weight_file, models_directory):
+	def process(self, weight_file, models_directory):
 		full_filepath = os.path.join(models_directory, weight_file)
 		weight_matrix = utils.load_weight_matrix(full_filepath, self.gene_ids)
 		significant_pathways_df = pd.DataFrame(
