@@ -87,12 +87,7 @@ class ProcessModels:
 			node_df.loc[:,"node"] = pd.Series([node] * len(node_df.index), index=node_df.index)
 			significant_pathways_df = pd.concat([significant_pathways_df, node_df], axis=0)
 		significant_pathways_df.reset_index(drop=True, inplace=True)
-		
-		output_filename = weight_file.replace(substring_to_replace, "_SigPathway_")
-		output_path = os.path.join(significant_pathways_dir, output_filename)
-		significant_pathways_df.to_csv(
-			path_or_buf=output_path, sep="\t", index=False)
-		return True
+		return (weight_file, significant_pathways_df)
 
 if __name__ == "__main__":
 	arguments = docopt(
@@ -134,3 +129,8 @@ if __name__ == "__main__":
 	t_f = time() - t_o
 	print("{0} models took {1} seconds to run on {2} cores.".format(
 		len(results), t_f, n_cores))
+	for weight_file, significant_pathways_df in results:
+		output_filename = weight_file.replace(substring_to_replace, "SigPathway")
+		output_path = os.path.join(output_directory, output_filename)
+		significant_pathways_df.to_csv(
+			path_or_buf=output_path, sep="\t", index=False)
