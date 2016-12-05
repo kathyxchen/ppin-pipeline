@@ -49,34 +49,19 @@ Options:
 
 """
 
-from docopt import docopt
 import multiprocessing
 import os
 import pdb
 import sys
 from time import time
 
+from docopt import docopt
 from joblib import Parallel, delayed
 import numpy as np
 import pandas as pd
 
 import mie
 import utils
-
-# read in the gene IDs from data file
-pcl_data = pd.read_csv(gene_compendium, sep="\t", usecols=["Gene_symbol"])
-gene_ids = pcl_data.iloc[:,0]  # format: list(str) of gene IDs
-
-# read in the pathway definitions
-pathway_definitions = pd.read_csv(pathway_definitions_file,
-	sep="\t", header=None, names=["pw", "size", "genes"], usecols=["pw", "genes"])
-pathway_definitions["genes"] = pathway_definitions["genes"].map(lambda x: x.split(";"))
-pathway_definitions.set_index("pw", inplace=True)
-union_pathway_genes = set()
-for gene_list in pathway_definitions["genes"]:
-	union_pathway_genes = union_pathway_genes.union(set(gene_list))
-
-pathway_definitions_map = utils.get_pathway_definitions_map(pathway_definitions)
 
 def process_model(weight_file):
 	full_filepath = os.path.join(weight_dir, weight_file)
@@ -119,9 +104,10 @@ if __name__ == "__main__":
 	else:
 		n_cores = multiprocessing.cpu_count() - 1
 
-	# only need the gene IDs from the compendium file.
-	pcl_data = pd.read_csv(gene_compendium, sep="\t", usecols=["Gene_symbol"])
-	gene_ids = pcl_data.iloc[:,0]  # format: list(str) of gene IDs
+	gene_ids = utils.load_gene_identifiers(gene_compendium)
+	
+	all_defined_genes, pathway_definitions = utils.load_pathway_definitions(
+		pathway_definitions_file)
 	
 	t_o = time()
 	np.seterr(all="raise")
