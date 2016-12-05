@@ -63,23 +63,36 @@ import pandas as pd
 import mie
 import utils
 
-def process_model(weight_file):
-	full_filepath = os.path.join(weight_dir, weight_file)
-	weight_matrix = utils.load_weight_matrix(full_filepath, gene_ids)
-	significant_pathways_df = pd.DataFrame(
-		[], columns=["node", "pathway", "p-value", "side", "padjust"])
-	for node in weight_matrix:
-		node_df = mie.single_node_pathway_enrichment(
-			weight_matrix[node], STD_ABOVE, len(gene_ids), union_pathway_genes, pathway_definitions_map)
-		node_df.loc[:,"node"] = pd.Series([node] * len(node_df.index), index=node_df.index)
-		significant_pathways_df = pd.concat([significant_pathways_df, node_df], axis=0)
-	significant_pathways_df.reset_index(drop=True, inplace=True)
-	
-	output_filename = weight_file.replace(substring_to_replace, "_SigPathway_")
-	output_path = os.path.join(significant_pathways_dir, output_filename)
-	significant_pathways_df.to_csv(
-		path_or_buf=output_path, sep="\t", index=False)
-	return True
+class ProcessModels:
+
+	def __init__(gene_ids, pathway_definitions_map, union_pathway_genes,
+				 std, use_all_genes):
+		self.gene_ids = gene_ids
+
+		self.pathway_definitions_map = pathway_definitions_map
+		self.union_pathway_genes = union_pathway_genes
+
+		self.std_signature = std
+		self.use_all_genes = use_all_genes
+
+	def process_model(self, weight_file, models_directory):
+		full_filepath = os.path.join(models_directory, weight_file)
+		weight_matrix = utils.load_weight_matrix(full_filepath, self.gene_ids)
+		significant_pathways_df = pd.DataFrame(
+			[], columns=["node", "pathway", "p-value", "side", "padjust"])
+		for node in weight_matrix:
+			node_df = mie.single_node_pathway_enrichment(
+				weight_matrix[node], self.std_signature, len(self.gene_ids),
+				self.union_pathway_genes, self.pathway_definitions_map)
+			node_df.loc[:,"node"] = pd.Series([node] * len(node_df.index), index=node_df.index)
+			significant_pathways_df = pd.concat([significant_pathways_df, node_df], axis=0)
+		significant_pathways_df.reset_index(drop=True, inplace=True)
+		
+		output_filename = weight_file.replace(substring_to_replace, "_SigPathway_")
+		output_path = os.path.join(significant_pathways_dir, output_filename)
+		significant_pathways_df.to_csv(
+			path_or_buf=output_path, sep="\t", index=False)
+		return True
 
 if __name__ == "__main__":
 	arguments = docopt(
@@ -88,7 +101,7 @@ if __name__ == "__main__":
 	output_directory = arguments["<output-dir>"]
 	pathway_definitions_file = arguments["<pathway-definitions>"]
 	gene_compendium = arguments["<gene-compendium>"]
-	stddev = float(arguments["--std"])
+	std = float(arguments["--std"])
 	substring_to_replace = arguments["--replace"]
 	all_genes = arguments["--all-genes"]
 
@@ -108,12 +121,15 @@ if __name__ == "__main__":
 	
 	all_defined_genes, pathway_definitions = utils.load_pathway_definitions(
 		pathway_definitions_file)
+
+	process_model = ProcessModel(
+		gene_ids, pathway_definitions, all_defined_genes, std, all_genes)
 	
 	t_o = time()
 	np.seterr(all="raise")
 	with Parallel(n_jobs=n_cores) as parallel:
 		results = parallel(
-			delayed(process_model)(weight_file)
+			delayed(process_model.process)(weight_file, models_directory)
 			for weight_file in os.listdir(models_directory))
 	t_f = time() - t_o
 	print("{0} models took {1} seconds to run on {2} cores.".format(
