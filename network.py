@@ -34,12 +34,12 @@ import utils
 
 DIR = 1
 INV = -1
-# Usage in the _pathway_node_shuffle function. Sets an upper bound for the
+# Usage: in `_pathway_node_shuffle`. Sets an upper bound for the
 # number of times we can randomly assign a pathway to a node during the side-
 # preserving ADAGE model permutation.
 MAX_ITERS = 30000
 
-# Usages in _cor_score_filter. cor_score > GLOBAL_COR in the 1st output
+# Usage: in `_cor_score_filter`. cor_score > GLOBAL_COR in the 1st output
 # will represent globally inverse relationships in the pathway-pathway network.
 # Additionally, cor_score <= GLOBAL_COR and padjust < COR_THRESH can
 # represent inversely-related pathways in some circumstances.

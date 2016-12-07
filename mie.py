@@ -9,7 +9,155 @@ from statsmodels.sandbox.stats.multicomp import multipletests
 
 import utils
 
-logging.basicConfig(stream=sys.stderr, level=logging.DEBUG)
+#logging.basicConfig(stream=sys.stderr, level=logging.DEBUG)
+LOGGER = logging.getLogger("pathway_coverage_without_crosstalk")
+
+def single_node_pathway_enrichment(node_data, std_above, n_genes,
+                                   genes_in_pathway_definitions,
+                                   pathway_definitions_map,
+                                   use_all_genes=False):
+    """Identify positively and negatively enriched pathways in a node.
+    
+    Parameters
+    -----------
+    node_data : pandas.Series
+        The weight of each gene in this node.
+    std_above : int
+        Only consider "high weight" genes: genes with weights +/- <std_above>
+        standard deviations from the mean.
+    n_genes : int
+        The total number of genes in the compendium.
+    genes_in_pathway_definitions : set(str)
+        The union of all genes in the list of pathway definitions
+    pathway_definitions_map : dict(str -> list(str))
+        Pathway definitions, pre-crosstalk-removal. A pathway (key) is defined
+        by a list of genes (value).
+    use_all_genes : bool (default=False)
+        The crosstalk removal procedure will be applied to gene signatures
+        (the set of genes considered positive or negative high weight).
+        If `use_all_genes=True`, crosstalk removal will also be applied to
+        genes outside of any signature (termed *remaining* genes).
+    
+    Returns
+    -----------
+    pandas.DataFrame | None
+    """
+    mean = node_data.mean()
+    cutoff = std_above * node_data.std()
+    positive_gene_signature = set(node_data[node_data >= mean + cutoff].index)
+    negative_gene_signature = set(node_data[node_data <= mean - cutoff].index)
+    
+    gene_signature = ((positive_gene_signature | negative_gene_signature) & 
+                      genes_in_pathway_definitions)
+
+    # maximum impact estimation returns positional pathway definitions--that is,
+    # a column index (corresponding to a pathway) is mapped to a set of
+    # row indices (corresponding to genes)
+    pathway_index_map = utils.index_element_map(pathway_definitions_map.keys())
+    if use_all_genes:
+        remaining_genes = genes_in_pathway_definitions - gene_signature
+        remaining_row_names = list(remaining_genes)
+        remaining_matrix = initialize_membership_matrix(
+            remaining_row_names, pathway_definitions_map)
+        pathway_remaining_genes = maximum_impact_estimation(
+            remaining_matrix)
+        remaining_index_map = utils.index_element_map(remaining_row_names)
+    if len(gene_signature) > 0:
+        signature_row_names = list(gene_signature)
+        signature_matrix = initialize_membership_matrix(
+            signature_row_names, pathway_definitions_map)
+        #pdb.set_trace()
+        pathway_signature_genes = maximum_impact_estimation(signature_matrix)
+        #pdb.set_trace()
+
+        signature_index_map = utils.index_element_map(signature_row_names)
+        #TODO: START WORK FROM HERE.
+        new_pathway_definitions = get_new_pathways(pathway_signature_genes, pathway_remaining_genes,
+                                                   signature_index_map, remaining_index_map,
+                                                   pathway_index_map)
+
+        positive_series = single_side_pathway_enrichment(new_pathway_definitions, positive_gene_signature, n_genes)
+        negative_series = single_side_pathway_enrichment(new_pathway_definitions, negative_gene_signature, n_genes)
+        pvalue_information = positive_series.append(negative_series)
+
+        side_information = pd.Series(["pos"] * len(positive_series)).append(pd.Series(["neg"] * len(negative_series)))
+        side_information.index = pvalue_information.index
+        side_information.name = "side"
+
+        significant_pathways_df = pd.concat([pvalue_information, side_information], axis=1)
+        below_alpha, fdr_values, _, _ = multipletests(significant_pathways_df["p-value"], alpha=0.05, method="fdr_bh")
+        below_alpha = pd.Series(below_alpha, index=pvalue_information.index, name="pass")
+        fdr_values = pd.Series(fdr_values, index=pvalue_information.index, name="padjust")
+        significant_pathways_df = pd.concat([significant_pathways_df, below_alpha, fdr_values], axis=1)
+        significant_pathways_df = significant_pathways_df[significant_pathways_df["pass"]]
+        significant_pathways_df.drop("pass", axis=1, inplace=True)
+        significant_pathways_df.loc[:,"pathway"] = significant_pathways_df.index
+        return significant_pathways_df
+    return None
+
+def maximum_impact_estimation(membership_matrix):
+    """Determines the underlying pathway impact matrix:
+    each gene is mapped to the pathway in which it has the most impact.
+    
+    Parameters
+    -----------
+    membership_matrix : numpy.array(float), shape = [n, k]
+        The observed gene-to-pathway membership matrix, where n is the number
+        of genes and k is the number of pathways we are interested in.
+    
+    Returns
+    -----------
+    dict(int -> list(int)), a dictionary mapping a pathway to a list of genes.
+    These are the new pathway definitions after the maximum impact estimation
+    procedure has been applied to remove crosstalk. 
+      - The keys are ints corresponding to the pathway column indices in the
+        membership matrix.
+      - The values are int lists corresponding to gene row indices in the
+        membership matrix. 
+    """
+    # Initialize the probability vector as the sum of each column in the
+    # membership matrix normalized by the sum of the entire membership matrix.
+    # The probability at some index j in the vector represents the likelihood
+    # that a pathway (column) j is defined by this set of genes (rows).
+    pr_0 = np.longdouble(np.sum(membership_matrix, axis=0) / 
+                         np.sum(membership_matrix))
+    difference = np.abs(1. - np.sum(pr_0))
+    assert difference < 1e-12, "Probabilities sum to {0}.".format(np.sum(pr_0))
+
+    pr_1 = update_probabilities(pr_0, membership_matrix)
+    epsilon = np.linalg.norm(pr_1 - pr_0)/100.
+    
+    pr_old = pr_1
+    check_for_convergence = epsilon
+    i = 0  # for logging
+    #pdb.set_trace()
+    while epsilon > 0. and (check_for_convergence >= epsilon):
+        pr_new = update_probabilities(pr_old, membership_matrix)
+        check_for_convergence = np.linalg.norm(pr_new - pr_old)
+        pr_old = pr_new
+        i += 1
+    logging.info("Number of steps taken for EM: {0}".format(i))
+    
+    pr_final = pr_old  # renaming for readability
+    
+    new_pathway_definitions = {}
+    n, _ = membership_matrix.shape
+    for gene_index in range(n):
+        gene_membership = membership_matrix[gene_index]
+        denominator = np.dot(gene_membership, pr_final)
+        # Approximation to prevent divide by zero warning.
+        # Since we are only looking for the most probable pathway in which a
+        # gene contributes its maximum impact, precision is not as important
+        # as maintaining the relative differences between each
+        # pathway's probability.
+        if denominator < 1e-300:
+            denominator = 1e-300
+        conditional_pathway_pr = gene_membership / denominator
+        pathway_index = np.argmax(conditional_pathway_pr)
+        if pathway_index not in new_pathway_definitions:
+            new_pathway_definitions[pathway_index] = []
+        new_pathway_definitions[pathway_index].append(gene_index)
+    return new_pathway_definitions
 
 def update_probabilities(pr, membership_matrix):
     """Updates the probability vector for each iteration of the
@@ -35,82 +183,59 @@ def update_probabilities(pr, membership_matrix):
     weighted_pathway_col_sums = np.multiply(pathway_col_sums, pr)
     sum_of_col_sums = np.sum(weighted_pathway_col_sums)
     try:
-        new_pr = weighted_pathway_col_sums/sum_of_col_sums
+        new_pr = weighted_pathway_col_sums / sum_of_col_sums
     except FloatingPointError:
-        cutoff = 1e-150/k
+        # In the event that we encounter underflow or overflow issues, apply
+        # this approximation.
+        cutoff = 1e-150 / k
         log_cutoff = np.log(cutoff)
 
-        weighted_pathway_col_sums = utils.replace_zeros(weighted_pathway_col_sums, cutoff)
-        log_wpcs = np.log(weighted_pathway_col_sums)
-        max_log_wpcs = np.max(log_wpcs)
-        log_wpcs = log_wpcs - max_log_wpcs
-        logging.info("{1} adjustments made to a vector of length {0} containing the raw weight values"
-                     " in a call to 'update_probabilities'".format(
-                len(log_wpcs),len(log_wpcs[log_wpcs < log_cutoff])))
+        weighted_pathway_col_sums = replace_zeros(
+            weighted_pathway_col_sums, cutoff)
+        log_weighted_col_sums = np.log(weighted_pathway_col_sums)
+        log_weighted_col_sums -= np.max(log_weighted_col_sums)
+
+        below_cutoff = log_weighted_col_sums < log_cutoff
+        geq_cutoff = log_weighted_col_sums >= log_cutoff
         
-        new_pr = np.zeros(len(log_wpcs))
-        new_pr[log_wpcs < log_cutoff] = cutoff
-        geq_cutoff = log_wpcs >= log_cutoff
-        new_pr[geq_cutoff] = np.exp(log_wpcs[geq_cutoff])/np.sum(np.exp(sorted(log_wpcs[geq_cutoff])))
-    # make sure the probabilities sum to 1
+        logging.info("{1} adjustments made to a vector of length {0}"
+                     " containing the raw weight values"
+                     " in a call to 'update_probabilities'".format(
+                     k, len(log_weighted_col_sums[below_cutoff])))
+        
+        new_pr = np.zeros(k)
+        new_pr[below_cutoff] = cutoff
+        col_sums_geq_cutoff = log_weighted_col_sums[geq_cutoff]
+        new_pr[geq_cutoff] = np.exp(col_sums_geq_cutoff) /
+                                    np.sum(np.exp(sorted(col_sums_geq_cutoff)))
+    
     difference = np.abs(1. - np.sum(new_pr))
-    assert difference < 1e-12, "Probabilities sum to {0}.".format(np.sum(new_pr))
+    assert difference < 1e-12, "Probabilities sum to {0}.".format(
+           np.sum(new_pr))
     return new_pr
 
-def maximum_impact_estimation(membership_matrix):
-    """Determines the underlying pathway impact matrix:
-    each gene is mapped to the pathway in which it has the most impact.
-    
+def replace_zeros(arr, default_min_value):
+    """Substitute 0s in the list with a near-zero value.
+
     Parameters
     -----------
-    membership_matrix : numpy.array(float), shape = [n, k]
-        The observed gene-to-pathway membership matrix, where n is the number
-        of genes and k is the number of pathways we are interested in.
-    
+    arr : numpy.ndarray
+    default_min_value : float
+        If the smallest non-zero element in `arr` is greater than the default,
+        use the default instead.
+
     Returns
     -----------
-    dict(int -> list(int)), a dictionary mapping a pathway to a list of genes.
-    These are the new pathway definitions after the maximum impact estimation
-    procedure has been applied to remove crosstalk. 
-      - The keys are ints corresponding to the pathway column indices in the membership matrix.
-      - The values are int lists corresponding to gene row indices in the membership matrix. 
+    numpy.ndarray
     """
-    pr_0 = np.longdouble(np.sum(membership_matrix, axis=0)/np.sum(membership_matrix))
-    difference = np.abs(1. - np.sum(pr_0))
-    assert difference < 1e-12, "Probabilities sum to {0}.".format(np.sum(pr_0))
-
-    pr_1 = update_probabilities(pr_0, membership_matrix)
-    epsilon = np.linalg.norm(pr_1 - pr_0)/100.
-    
-    pr_old = pr_1
-    check_for_convergence = epsilon
-    i = 0  # for logging
-    #pdb.set_trace()
-    while epsilon > 0. and (check_for_convergence >= epsilon):
-        pr_new = update_probabilities(pr_old, membership_matrix)
-        check_for_convergence = np.linalg.norm(pr_new - pr_old)
-        pr_old = pr_new
-        i += 1
-    logging.info("Number of steps taken for EM: {0}".format(i))
-    # after convergence criterion is met, we have our final probabilities.
-    pr_final = pr_old  # renaming for readability
-    
-    new_pathway_definitions = {}
-    n, _ = membership_matrix.shape
-    for gene_index in range(n):
-        gene_membership = membership_matrix[gene_index]
-        denominator = np.dot(gene_membership, pr_final)
-        if denominator < 1e-200:
-            denominator = 1e-200
-        conditional_pathway_pr = gene_membership/denominator
-        pathway_index = np.argmax(conditional_pathway_pr)
-        if pathway_index not in new_pathway_definitions:
-            new_pathway_definitions[pathway_index] = []
-        new_pathway_definitions[pathway_index].append(gene_index)
-    return new_pathway_definitions
+    min_nonzero_value = min(default_min_value, np.min(arr[arr > 0]))
+    closest_to_zero = np.nextafter(min_nonzero_value, min_nonzero_value - 1)
+    arr[arr == 0] = closest_to_zero
+    return arr
 
 def get_new_pathways(pathway_signature_genes, pathway_remaining_genes,
-                     signature_index_map, remaining_index_map, pathway_index_map):
+                     signature_index_map, remaining_index_map,
+                     pathway_index_map):
     new_pathway_definitions = {}
     new_pathway_definitions = update_pathway_definitions(
         pathway_signature_genes, signature_index_map, pathway_index_map, new_pathway_definitions)
@@ -120,7 +245,9 @@ def get_new_pathways(pathway_signature_genes, pathway_remaining_genes,
         new_pathway_definitions[pathway] = set(definition)
     return new_pathway_definitions
 
-def update_pathway_definitions(index_pathway_definitions, gene_index_map, pathway_index_map, current_pathway_definitions):
+def update_pathway_definitions(index_pathway_definitions,
+                               gene_index_map, pathway_index_map,
+                               current_pathway_definitions):
     for pathway_index, list_gene_indices in index_pathway_definitions.items():
         pathway = pathway_index_map[pathway_index]
         if pathway not in current_pathway_definitions:
@@ -162,107 +289,27 @@ def single_side_pathway_enrichment(pathway_definitions, gene_signature, n_genes)
     pvalues_series = pd.Series(pvalues_list, index=pathway_definitions.keys(), name="p-value")
     return pvalues_series
 
-def single_node_pathway_enrichment(
-    node_data, std_above, n_genes, genes_in_pathway_definitions, pathway_definitions_map):
-    """Identify positively and negatively enriched pathways in a node.
+def initialize_membership_matrix(gene_row_names, pathway_definitions_map):
+    """Create the binary gene-to-pathway membership matrix that
+    will be considered in the maximum impact estimation procedure.
     
     Parameters
     -----------
-    node_data : pandas.Series
-        The weight of each gene in this node.
-    std_above : int
-        Only consider "high weight" genes: genes with weights +/- <std_above> standard deviations from the mean.
-    n_genes : int
-        The total number of genes in the compendium.
-    genes_in_pathway_definitions : set(str)
-        The union of all genes in the list of pathway definitions
+    gene_row_names : set(str)
+        The genes for which we want to assess pathway membership
     pathway_definitions_map : dict(str -> list(str))
-        Pathway definitions, pre-crosstalk-removal. A pathway (key) is defined by a list of genes (value).
+        Pathway definitions, pre-crosstalk-removal.
+        A pathway (key) is defined by a list of genes (value).
     
     Returns
     -----------
-    TODO
+    numpy.array, shape = [n, k], the membership matrix
     """
-    mean = node_data.mean()
-    cutoff = std_above * node_data.std()
-    positive_gene_signature = set(node_data[node_data >= mean + cutoff].index)
-    negative_gene_signature = set(node_data[node_data <= mean - cutoff].index)
-    
-    gene_signature = (positive_gene_signature | negative_gene_signature) & genes_in_pathway_definitions
-    if len(gene_signature) > 0:
-        remaining_genes = genes_in_pathway_definitions - gene_signature
-
-        # crosstalk_removal
-        signature_row_names = list(gene_signature)
-        remaining_row_names = list(remaining_genes)
-        sig_matrix, rem_matrix = initialize_membership_matrices(
-            signature_row_names, remaining_row_names, pathway_definitions_map)
-        #pdb.set_trace()
-        pathway_signature_genes = maximum_impact_estimation(sig_matrix)
-        #pdb.set_trace()
-        pathway_remaining_genes = maximum_impact_estimation(rem_matrix)
-
-        # 'maximum_impact_estimation' outputs dictionaries with the index information
-        # for the pathways and genes.
-        signature_index_map = utils.index_element_map(signature_row_names)
-        remaining_index_map = utils.index_element_map(remaining_row_names)
-
-        assert [tup[0] for tup in pathway_definitions_map.items()] == list(pathway_definitions_map.keys()), \
-               "dictionary items() and keys() are not in the same order"
-        pathway_index_map = utils.index_element_map(pathway_definitions_map.keys())
-
-        new_pathway_definitions = get_new_pathways(pathway_signature_genes, pathway_remaining_genes,
-                                                   signature_index_map, remaining_index_map,
-                                                   pathway_index_map)
-
-        positive_series = single_side_pathway_enrichment(new_pathway_definitions, positive_gene_signature, n_genes)
-        negative_series = single_side_pathway_enrichment(new_pathway_definitions, negative_gene_signature, n_genes)
-        pvalue_information = positive_series.append(negative_series)
-
-        side_information = pd.Series(["pos"] * len(positive_series)).append(pd.Series(["neg"] * len(negative_series)))
-        side_information.index = pvalue_information.index
-        side_information.name = "side"
-
-        significant_pathways_df = pd.concat([pvalue_information, side_information], axis=1)
-        below_alpha, fdr_values, _, _ = multipletests(significant_pathways_df["p-value"], alpha=0.05, method="fdr_bh")
-        below_alpha = pd.Series(below_alpha, index=pvalue_information.index, name="pass")
-        fdr_values = pd.Series(fdr_values, index=pvalue_information.index, name="padjust")
-        significant_pathways_df = pd.concat([significant_pathways_df, below_alpha, fdr_values], axis=1)
-        significant_pathways_df = significant_pathways_df[significant_pathways_df["pass"]]
-        significant_pathways_df.drop("pass", axis=1, inplace=True)
-        significant_pathways_df.loc[:,"pathway"] = significant_pathways_df.index
-        return significant_pathways_df
-    return None
-
-def initialize_membership_matrices(signature_row_names, remaining_row_names, pathway_definitions_map):
-    """Create the binary gene-to-pathway membership matrices that will be considered in 
-    the maximum impact estimation procedure.
-    
-    Parameters
-    -----------
-    signature_row_names : set(str)
-        The genes in a node gene signature
-    remaining_row_names : set(str)
-        The genes outside of a node gene signature
-    pathway_definitions_map : dict(str -> list(str))
-        Pathway definitions, pre-crosstalk-removal. A pathway (key) is defined by a list of genes (value).
-    
-    Returns
-    -----------
-    tuple(np.array, np.array), shape = [n, k], the membership matrices
-    for pathway genes (1) in a node gene signature and (2) outside of a node gene signature. 
-    """
-    signature_membership = []
-    remaining_membership = []
+    membership = []
     
     for pathway, full_definition in pathway_definitions_map.items():
-        pathway_gene_signature = list(full_definition & set(signature_row_names))
-        signature_membership.append(np.in1d(signature_row_names, pathway_gene_signature))
-        
-        remaining_genes = list(full_definition & set(remaining_row_names))
-        assert set(remaining_genes) == full_definition - set(pathway_gene_signature)
-        remaining_membership.append(np.in1d(remaining_row_names, remaining_genes))
-    
-    signature_membership = np.array(signature_membership).astype("float").T
-    remaining_membership = np.array(remaining_membership).astype("float").T
-    return (signature_membership, remaining_membership)
+        pathway_genes = list(full_definition & set(gene_row_names))
+        membership.append(np.in1d(gene_row_names, pathway_genes))
+
+    membership = np.array(membership).astype("float").T
+    return membership

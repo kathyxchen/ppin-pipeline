@@ -12,11 +12,12 @@ Usage:
 	pipeline.py <models-dir> <output-dir>
 		<pathway-definitions> <gene-compendium>
 		[--cores=<n-cores>] [--replace=<replace>] [--std=<std-signature>]
-		[-a | --all-genes]
+		[-a | --all-genes] [-v | --verbose]
     pipeline.py -h | --help
 
 Options:
     -h --help                   Show this screen.
+    -v --verbose                Output logging information.
 
     <models-dir>                Path to the directory containing ADAGE models
     <output-dir>                Path to the directory that will store the
@@ -48,7 +49,8 @@ Options:
 
 
 """
-
+from __future__ import *
+import logging
 import multiprocessing
 import os
 import pdb  # TODO: remove when script is finalized.
@@ -63,7 +65,7 @@ import pandas as pd
 import mie
 import utils
 
-REPLACE_WITH = "SigPathway"
+OUTPUT_FILE_NAMING = "SigPathway"
 
 class ProcessModel:
 
@@ -82,9 +84,10 @@ class ProcessModel:
 		weight_matrix = utils.load_weight_matrix(full_filepath, self.gene_ids)
 		significant_pathways_df = pd.DataFrame(
 			[], columns=["node", "pathway", "p-value", "side", "padjust"])
+		n_genes = len(self.gene_ids)
 		for node in weight_matrix:
 			node_df = mie.single_node_pathway_enrichment(
-				weight_matrix[node], self.std_signature, len(self.gene_ids),
+				weight_matrix[node], self.std_signature, n_genes,
 				self.union_pathway_genes, self.pathway_definitions_map,
 				self.use_all_genes)
 			node_df.loc[:,"node"] = pd.Series([node] * len(node_df.index), index=node_df.index)
@@ -102,6 +105,7 @@ if __name__ == "__main__":
 	std = float(arguments["--std"])
 	substring_to_replace = arguments["--replace"]
 	all_genes = arguments["--all-genes"]
+	verbose = arguments["--verbose"]
 
 	# create the output directory if it does not exist
 	try: 
@@ -115,8 +119,11 @@ if __name__ == "__main__":
 	else:
 		n_cores = multiprocessing.cpu_count() - 1
 
+	logger = logging.getLogger("pathway_coverage_without_crosstalk")
+	if verbose:
+		logger.setLevel(logging.INFO)
+
 	gene_ids = utils.load_gene_identifiers(gene_compendium)
-	
 	all_defined_genes, pathway_definitions = utils.load_pathway_definitions(
 		pathway_definitions_file)
 
@@ -133,10 +140,8 @@ if __name__ == "__main__":
 	print("{0} models took {1} seconds to run on {2} cores.".format(
 		len(results), t_f, n_cores))
 
-	# Nodes in each model are enriched for certain pathways.
-	# Write this information to the output directory.
 	for model, significant_pathways_df in results:
-		output_filename = model.replace(substring_to_replace, REPLACE_WITH)
+		output_filename = model.replace(substring_to_replace, OUTPUT_FILE_NAMING)
 		output_path = os.path.join(output_directory, output_filename)
 		significant_pathways_df.to_csv(
 			path_or_buf=output_path, sep="\t", index=False)

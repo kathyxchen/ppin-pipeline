@@ -1,50 +1,9 @@
+"""
+Utility functions
+"""
 import numpy as np
 import pandas as pd
 
-def get_pathway_definitions_map(pathway_definitions_df):
-	pathway_definitions_map = {}
-	for index, row in pathway_definitions_df.iterrows():
-		pathway_definitions_map[index] = set(row["genes"])
-	return pathway_definitions_map
-
-def index_element_map(arr):
-	"""Map the indices of the array to the respective elements.
-	
-	Parameters
-	-----------
-	arr : list(a)
-		The array to process, of generic type a
-		
-	Returns
-	-----------
-	dict(int -> a), a dictionary corresponding the index to the element
-	"""
-	index_to_element = {}
-	for index, element in enumerate(arr):
-		index_to_element[index] = element
-	return index_to_element
-
-def label_trim(full_pw_label):
-	""" Quick code to make the pathway labels shorter. Not especially
-		elegant.
-	"""
-	if full_pw_label[0:2] == "GO":
-		trim_idx = full_pw_label.index(":")
-		if trim_idx != INV:
-			return full_pw_label[trim_idx+1:] + " - GO"
-		else:
-			return full_pw_label
-	else:
-		to_remove = "- Pseudomonas aeruginosa PAO1"
-		pw_trim = full_pw_label.split(" ", 1)
-		if len(pw_trim) > 1:
-			pw_trim = pw_trim[1]
-		if to_remove in pw_trim:
-			return pw_trim[0:pw_trim.index(to_remove)] + "PA01"
-		elif ":" in full_pw_label:
-			return pw_trim
-		else:
-			return full_pw_label.strip()
 
 def load_weight_matrix(path_to_weight_file, gene_ids):
 	"""Reads in the ADAGE model weight matrix.
@@ -103,6 +62,47 @@ def load_pathway_definitions(path_to_pathway_definitions):
 	pathway_definitions_map = get_pathway_definitions_map(pathway_definitions)
 	return union_pathway_genes, pathway_definitions_map
 
+def get_pathway_definitions_map(pathway_definitions_df):
+	"""
+	Parameters
+	-----------
+	pathway_definitions_df : pandas.DataFrame
+		columns = [pathway, [geneA, geneB, ..., geneN]]
+		index column = pathway
+		
+	Returns
+	-----------
+	dict(str -> set(str)), a pathway (key) is mapped to a set of genes (value).
+	"""
+	pathway_definitions_map = {}
+	for index, row in pathway_definitions_df.iterrows():
+		pathway_definitions_map[index] = set(row["genes"])
+	return pathway_definitions_map
+
+def label_trim(full_pw_label):
+	""" Based on the naming conventions for GO and KEGG pathways,
+	shorten the pathway labels if possible.
+
+	#TODO: provide some examples of the naming convention.
+	"""
+	if full_pw_label[0:2] == "GO":
+		trim_idx = full_pw_label.index(":")
+		if trim_idx != -1:
+			return full_pw_label[trim_idx + 1:] + " - GO"
+		else:
+			return full_pw_label
+	else:
+		to_remove = "- Pseudomonas aeruginosa PAO1"
+		pw_trim = full_pw_label.split(" ", 1)
+		if len(pw_trim) > 1:
+			pw_trim = pw_trim[1]
+		if to_remove in pw_trim:
+			return pw_trim[0:pw_trim.index(to_remove)] + "PA01"
+		elif ":" in full_pw_label:
+			return pw_trim
+		else:
+			return full_pw_label.strip()
+
 def read_significant_pathways_file(path_to_file):
 	node_pathway_df = pd.read_table(path_to_file,
 									sep="\t",
@@ -113,21 +113,19 @@ def read_significant_pathways_file(path_to_file):
 	node_pathway_df = node_pathway_df.sort_values(by=["node", "side"])
 	return node_pathway_df
 
-def replace_zeros(arr, default_min_value):
-	"""Substitute 0s in the list with a near-zero value.
-
+def index_element_map(arr):
+	"""Map the indices of the array to the respective elements.
+	
 	Parameters
 	-----------
-	arr : numpy.ndarray
-	default_min_value : float
-		If the smallest non-zero element in `arr` is greater than the default,
-		use the default instead.
-
+	arr : list(a)
+		The array to process, of generic type a
+		
 	Returns
 	-----------
-	numpy.ndarray
+	dict(int -> a), a dictionary corresponding the index to the element
 	"""
-	min_nonzero_value = min(default_min_value, np.min(arr[arr > 0]))
-	closest_to_zero = np.nextafter(min_nonzero_value, min_nonzero_value - 1)
-	arr[arr == 0] = closest_to_zero
-	return arr
+	index_to_element = {}
+	for index, element in enumerate(arr):
+		index_to_element[index] = element
+	return index_to_element
