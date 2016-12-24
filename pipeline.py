@@ -68,6 +68,9 @@ import utils
 OUTPUT_FILE_NAMING = "SigPathway"
 
 class ProcessModel:
+	"""This class is used to apply the crosstalk removal procedure
+	to one or more ADAGE weight matrices.
+	"""
 
 	def __init__(gene_ids, pathway_definitions_map, union_pathway_genes,
 				 std, use_all_genes):
@@ -79,21 +82,23 @@ class ProcessModel:
 		self.std_signature = std
 		self.use_all_genes = use_all_genes
 
-	def process(self, models_directory, current_model):
-		full_filepath = os.path.join(models_directory, current_model)
+	def process(self, models_directory, current_model_filename):
+		full_filepath = os.path.join(models_directory, current_model_filename)
 		weight_matrix = utils.load_weight_matrix(full_filepath, self.gene_ids)
 		significant_pathways_df = pd.DataFrame(
 			[], columns=["node", "pathway", "p-value", "side", "padjust"])
 		n_genes = len(self.gene_ids)
 		for node in weight_matrix:
-			node_df = mie.single_node_pathway_enrichment(
+			node_df = mie.feature_pathway_enrichment(
 				weight_matrix[node], self.std_signature, n_genes,
 				self.union_pathway_genes, self.pathway_definitions_map,
 				self.use_all_genes)
-			node_df.loc[:,"node"] = pd.Series([node] * len(node_df.index), index=node_df.index)
-			significant_pathways_df = pd.concat([significant_pathways_df, node_df], axis=0)
+			node_df.loc[:,"node"] = pd.Series(
+				[node] * len(node_df.index), index=node_df.index)
+			significant_pathways_df = pd.concat(
+				[significant_pathways_df, node_df], axis=0)
 		significant_pathways_df.reset_index(drop=True, inplace=True)
-		return (weight_file, significant_pathways_df)
+		return (current_model_filename, significant_pathways_df)
 
 if __name__ == "__main__":
 	arguments = docopt(
