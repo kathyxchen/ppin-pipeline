@@ -9,6 +9,8 @@ from statsmodels.sandbox.stats.multicomp import multipletests
 
 import utils
 
+ALPHA = 0.05
+
 #logging.basicConfig(stream=sys.stderr, level=logging.DEBUG)
 LOGGER = logging.getLogger("pathway_coverage_without_crosstalk")
 
@@ -53,13 +55,14 @@ def feature_pathway_enrichment(feature_weight_vector, std_above, n_genes,
     gene_signature = ((positive_gene_signature | negative_gene_signature) & 
                       genes_in_pathway_definitions)
 
+    if not gene_signature:
+        return None
+
     # maximum impact estimation returns positional pathway definitions--
     # each column index (corresponding to a pathway) is mapped to a set of
     # row indices (corresponding to genes)
     new_pathway_definitions = {}
     pathway_index_map = utils.index_element_map(pathway_definitions_map.keys())
-    if len(gene_signature) == 0:
-        return None
     
     signature_row_names = list(gene_signature)
     signature_matrix = initialize_membership_matrix(
@@ -67,8 +70,7 @@ def feature_pathway_enrichment(feature_weight_vector, std_above, n_genes,
     pathway_signature_genes = maximum_impact_estimation(signature_matrix)
     signature_index_map = utils.index_element_map(signature_row_names)
     new_pathway_definitions = update_pathway_definitions(
-        pathway_signature_genes,
-        signature_index_map, pathway_index_map,
+        pathway_signature_genes, signature_index_map, pathway_index_map,
         new_pathway_definitions)
     
     remaining_genes = genes_in_pathway_definitions - gene_signature
@@ -76,32 +78,34 @@ def feature_pathway_enrichment(feature_weight_vector, std_above, n_genes,
         remaining_row_names = list(remaining_genes)
         remaining_matrix = initialize_membership_matrix(
             remaining_row_names, pathway_definitions_map)
-        pathway_remaining_genes = maximum_impact_estimation(
-            remaining_matrix)
+        pathway_remaining_genes = maximum_impact_estimation(remaining_matrix)
         remaining_index_map = utils.index_element_map(remaining_row_names)
         new_pathway_definitions = update_pathway_definitions(
-            pathway_remaining_genes,
-            remaining_index_map, pathway_index_map,
+            pathway_remaining_genes, remaining_index_map, pathway_index_map,
             new_pathway_definitions)
     else:
         for pathway, gene_list in pathway_definitions_map.items():
-            new_pathway_definitions[pathway] += set(gene_list) & remaining_genes
+            if pathway not in new_pathway_definitions:
+                new_pathway_definitions[pathway] = set(gene_list)
+            else:
+                new_pathway_definitions[pathway] |= (set(gene_list) &
+                    remaining_genes)
 
-    positive_series = single_side_pathway_enrichment(
+    pathway_positive_series = single_side_pathway_enrichment(
         new_pathway_definitions, positive_gene_signature, n_genes)
-    negative_series = single_side_pathway_enrichment(
+    pathway_negative_series = single_side_pathway_enrichment(
         new_pathway_definitions, negative_gene_signature, n_genes)
-    pvalue_information = positive_series.append(negative_series)
+    pvalue_information = pathway_positive_series.append(pathway_negative_series)
 
-    side_information = pd.Series(["pos"] * len(positive_series)).append(
-        pd.Series(["neg"] * len(negative_series)))
+    side_information = pd.Series(["pos"] * len(pathway_positive_series)).append(
+        pd.Series(["neg"] * len(pathway_negative_series)))
     side_information.index = pvalue_information.index
     side_information.name = "side"
 
     significant_pathways = pd.concat(
         [pvalue_information, side_information], axis=1)
-    below_alpha, fdr_values, _, _ = multipletests(
-        significant_pathways["p-value"], alpha=0.05, method="fdr_bh")
+    below_alpha, fdr_values, _, _ = multipletests(  # TODO: ALPHA PARAMETER?
+        significant_pathways["p-value"], alpha=ALPHA, method="fdr_bh")
     below_alpha = pd.Series(
         below_alpha, index=pvalue_information.index, name="pass")
     fdr_values = pd.Series(
@@ -110,7 +114,7 @@ def feature_pathway_enrichment(feature_weight_vector, std_above, n_genes,
         [significant_pathways, below_alpha, fdr_values], axis=1)
     significant_pathways = significant_pathways[significant_pathways["pass"]]
     significant_pathways.drop("pass", axis=1, inplace=True)
-    significant_pathways.loc[:,"pathway"] = significant_pathways_df.index
+    significant_pathways.loc[:,"pathway"] = significant_pathways.index
     return significant_pathways
 
 def maximum_impact_estimation(membership_matrix):
@@ -148,7 +152,6 @@ def maximum_impact_estimation(membership_matrix):
     pr_old = pr_1
     check_for_convergence = epsilon
     i = 0  # for logging
-    #pdb.set_trace()
     while epsilon > 0. and (check_for_convergence >= epsilon):
         pr_new = update_probabilities(pr_old, membership_matrix)
         check_for_convergence = np.linalg.norm(pr_new - pr_old)
@@ -224,8 +227,8 @@ def update_probabilities(pr, membership_matrix):
         new_pr = np.zeros(k)
         new_pr[below_cutoff] = cutoff
         col_sums_geq_cutoff = log_weighted_col_sums[geq_cutoff]
-        new_pr[geq_cutoff] = np.exp(col_sums_geq_cutoff) /
-                                    np.sum(np.exp(sorted(col_sums_geq_cutoff)))
+        new_pr[geq_cutoff] = np.exp(
+            col_sums_geq_cutoff) / np.sum(np.exp(sorted(col_sums_geq_cutoff)))
     
     difference = np.abs(1. - np.sum(new_pr))
     assert difference < 1e-12, "Probabilities sum to {0}.".format(
@@ -283,9 +286,9 @@ def update_pathway_definitions(index_pathway_definitions,
     for pathway_index, list_gene_indices in index_pathway_definitions.items():
         pathway = pathway_index_map[pathway_index]
         if pathway not in current_pathway_definitions:
-            current_pathway_definitions[pathway] = []
+            current_pathway_definitions[pathway] = set()
         genes = [gene_index_map[index] for index in list_gene_indices]
-        current_pathway_definitions[pathway] += genes
+        current_pathway_definitions[pathway] |= set(genes)
     return current_pathway_definitions
 
 def single_side_pathway_enrichment(pathway_definitions, gene_signature, n_genes):
@@ -295,30 +298,39 @@ def single_side_pathway_enrichment(pathway_definitions, gene_signature, n_genes)
     Parameters
     -----------
     pathway_definitions : dict(str -> list(str))
-        Pathway definitions, *post-crosstalk*-removal. A pathway (key) is defined by a list of genes (value).
-        Each gene is only associated with one pathway.
+        Pathway definitions, *post-crosstalk*-removal. A pathway (key) is
+        defined by a list of genes (value). Each gene is only
+        associated with one pathway.
     gene_signature : list(str)
         The set of genes we consider to be enriched in a node.
     n_genes : int
-        The total number of genes that were considered in the unsupervised model.
+        The total number of genes that were considered in the unsupervised
+        model.
     
     Returns
     -----------
-    pandas.Series, for each pathway, the p-value from applying the Fisher's exact test.
+    pandas.Series, for each pathway, the p-value from applying the Fisher's
+                   exact test.
     """
     pvalues_list = []
     for pathway, definition in pathway_definitions.items():
         both_definition_and_signature = len(definition & gene_signature)
-        in_definition_not_signature = len(definition) - both_definition_and_signature
-        in_signature_not_definition = len(gene_signature) - both_definition_and_signature
-        neither_definition_nor_signature = (n_genes - both_definition_and_signature -
-                                            in_definition_not_signature - in_signature_not_definition)
-        contingency_table = np.array([[both_definition_and_signature, in_signature_not_definition],
-                                      [in_definition_not_signature, neither_definition_nor_signature]])
+        in_definition_not_signature = (len(definition) -
+            both_definition_and_signature)
+        in_signature_not_definition = (len(gene_signature) -
+            both_definition_and_signature)
+        neither_definition_nor_signature = (n_genes -
+            both_definition_and_signature - in_definition_not_signature -
+            in_signature_not_definition)
+        contingency_table = np.array(
+            [[both_definition_and_signature, in_signature_not_definition],
+            [in_definition_not_signature, neither_definition_nor_signature]])
         
-        _, pvalue = stats.fisher_exact(contingency_table, alternative="greater")
+        _, pvalue = stats.fisher_exact(
+            contingency_table, alternative="greater")
         pvalues_list.append(pvalue)
-    pvalues_series = pd.Series(pvalues_list, index=pathway_definitions.keys(), name="p-value")
+    pvalues_series = pd.Series(
+        pvalues_list, index=pathway_definitions.keys(), name="p-value")
     return pvalues_series
 
 def initialize_membership_matrix(gene_row_names, pathway_definitions_map):
@@ -338,10 +350,8 @@ def initialize_membership_matrix(gene_row_names, pathway_definitions_map):
     numpy.array, shape = [n, k], the membership matrix
     """
     membership = []
-    
     for pathway, full_definition in pathway_definitions_map.items():
         pathway_genes = list(full_definition & set(gene_row_names))
         membership.append(np.in1d(gene_row_names, pathway_genes))
-
     membership = np.array(membership).astype("float").T
     return membership

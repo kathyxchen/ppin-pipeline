@@ -34,7 +34,7 @@ def load_gene_identifiers(path_to_gene_compendium):
 	-----------
 	list(str) a list of gene identifiers
 	"""
-	pcl_data = pd.read_csv(gene_compendium, sep="\t", usecols=["Gene_symbol"])
+	pcl_data = pd.read_csv(path_to_gene_compendium, sep="\t", usecols=["Gene_symbol"])
 	gene_ids = pcl_data.iloc[:,0]
 	return gene_ids
 
@@ -52,7 +52,7 @@ def load_pathway_definitions(path_to_pathway_definitions):
 	(2) A dictionary of pathway definitions, where a pathway (key) is mapped
 	    to a set of genes (value) 
 	"""
-	pathway_definitions = pd.read_csv(pathway_definitions_file,
+	pathway_definitions = pd.read_csv(path_to_pathway_definitions,
 		sep="\t", header=None, names=["pw", "size", "genes"], usecols=["pw", "genes"])
 	pathway_definitions["genes"] = pathway_definitions["genes"].map(lambda x: x.split(";"))
 	pathway_definitions.set_index("pw", inplace=True)

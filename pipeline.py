@@ -46,10 +46,10 @@ Options:
                                 is only applied to genes in the node's gene
                                 signatures (genes with a high positive weight
                                 or high negative weight).
+                                [default: False]
 
 
 """
-from __future__ import *
 import logging
 import multiprocessing
 import os
@@ -72,7 +72,7 @@ class ProcessModel:
 	to one or more ADAGE weight matrices.
 	"""
 
-	def __init__(gene_ids, pathway_definitions_map, union_pathway_genes,
+	def __init__(self, gene_ids, pathway_definitions_map, union_pathway_genes,
 				 std, use_all_genes):
 		self.gene_ids = gene_ids
 
