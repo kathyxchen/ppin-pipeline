@@ -11,7 +11,8 @@ Output:
 Usage:
 	pipeline.py <models-dir> <output-dir>
 		<pathway-definitions> <gene-compendium>
-		[--cores=<n-cores>] [--replace=<replace>] [--std=<std-signature>]
+		[--cores=<n-cores>] [--replace=<replace>]
+		[--std=<std-signature>] [--alpha=<alpha>]
 		[-a | --all-genes] [-v | --verbose]
     pipeline.py -h | --help
 
@@ -30,7 +31,8 @@ Options:
 
     --replace=<replace>         The resulting file keeps the naming convention
                                 of the input file, with the exception of this
-                                substring, which will be replaced by 'SigPathways'
+                                substring, which will be replaced by
+                                'SigPathways'
                                 [default: network]
     --cores=<n-cores>           Number of cores used to run crosstalk removal on
                                 models in parallel
@@ -40,6 +42,8 @@ Options:
                                 cutoff for an ADAGE node's high positive weight
                                 and high negative weight gene signatures.
                                 [default: 2.5]
+    --alpha=<alpha>             Significance level for pathway enrichment.
+                                [default: 0.05]
 
     -a --all-genes              Apply crosstalk removal to the full gene set
                                 in each ADAGE node. By default, the procedure
@@ -53,7 +57,6 @@ Options:
 import logging
 import multiprocessing
 import os
-import pdb  # TODO: remove when script is finalized.
 import sys
 from time import time
 
@@ -73,12 +76,13 @@ class ProcessModel:
 	"""
 
 	def __init__(self, gene_ids, pathway_definitions_map, union_pathway_genes,
-				 std, use_all_genes):
+				 alpha, std, use_all_genes):
 		self.gene_ids = gene_ids
 
 		self.pathway_definitions_map = pathway_definitions_map
 		self.union_pathway_genes = union_pathway_genes
 
+		self.alpha = alpha
 		self.std_signature = std
 		self.use_all_genes = use_all_genes
 
@@ -86,19 +90,21 @@ class ProcessModel:
 		full_filepath = os.path.join(models_directory, current_model_filename)
 		weight_matrix = utils.load_weight_matrix(full_filepath, self.gene_ids)
 		significant_pathways_df = pd.DataFrame(
-			[], columns=["node", "pathway", "p-value", "side", "padjust"])
+			[], columns=["feature", "pathway", "side", "p-value", "padjust"])
 		n_genes = len(self.gene_ids)
-		for node in weight_matrix:
-			node_df = mie.feature_pathway_enrichment(
-				weight_matrix[node], self.std_signature, n_genes,
+		for feature in weight_matrix:
+			feature_df = mie.pathway_enrichment_without_crosstalk(
+				weight_matrix[feature], self.alpha, n_genes,
 				self.union_pathway_genes, self.pathway_definitions_map,
+				utils.define_gene_signature(weight_matrix[feature]),
 				self.use_all_genes)
-			node_df.loc[:,"node"] = pd.Series(
-				[node] * len(node_df.index), index=node_df.index)
+			feature_df.loc[:,"feature"] = pd.Series(
+				[feature] * len(feature_df.index), index=feature_df.index)
 			significant_pathways_df = pd.concat(
-				[significant_pathways_df, node_df], axis=0)
+				[significant_pathways_df, feature_df], axis=0)
 		significant_pathways_df.reset_index(drop=True, inplace=True)
 		return (current_model_filename, significant_pathways_df)
+
 
 if __name__ == "__main__":
 	arguments = docopt(
@@ -108,6 +114,7 @@ if __name__ == "__main__":
 	pathway_definitions_file = arguments["<pathway-definitions>"]
 	gene_compendium = arguments["<gene-compendium>"]
 	std = float(arguments["--std"])
+	alpha = float(arguments["--alpha"])
 	substring_to_replace = arguments["--replace"]
 	all_genes = arguments["--all-genes"]
 	verbose = arguments["--verbose"]
@@ -124,7 +131,7 @@ if __name__ == "__main__":
 	else:
 		n_cores = multiprocessing.cpu_count() - 1
 
-	logger = logging.getLogger("pathway_coverage_without_crosstalk")
+	logger = logging.getLogger("pathway_enrichment")
 	if verbose:
 		logger.setLevel(logging.INFO)
 
@@ -133,7 +140,7 @@ if __name__ == "__main__":
 		pathway_definitions_file)
 
 	process_model = ProcessModel(
-		gene_ids, pathway_definitions, all_defined_genes, std, all_genes)
+		gene_ids, pathway_definitions, all_defined_genes, alpha, std, all_genes)
 	
 	t_o = time()
 	np.seterr(all="raise")

@@ -3,7 +3,7 @@ This script returns data for the number of pathways present in
 individual and ensemble ADAGE models after crosstalk removal.
 Output:
     1 .txt file containing tab delimited rows formatted as such:
-    model type, # models (N), counts for N models, sep. by semicolons
+    model type, # models (N), counts for N models sep. by semicolons
     Example:
       eADAGE same   9   63;65;61;62;61;60;63;65;65
 
@@ -27,8 +27,9 @@ import csv
 import pandas as pd
 
 NUM_NODES = 300
-OUTPUT_FILE = os.path.join("models_sigpathways_no_crosstalk",
-                           "MODEL_PATHWAY_COVERAGE_no_crosstalk.txt")
+#OUTPUT_FILE = os.path.join("models_sigpathways_no_crosstalk",
+#                           "MODEL_PATHWAY_COVERAGE_no_crosstalk.txt")
+OUTPUT_FILE = "1227-pwc.txt"
 MODEL_PATHWAY_COVERAGE = {
     "corADAGE same": [],
     "corADAGE different": [],

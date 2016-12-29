@@ -1,9 +1,41 @@
 """
 Utility functions
 """
+from functools import partial
+
 import numpy as np
 import pandas as pd
 
+def define_gene_signature(std):
+	"""Provide a criterion for distinguishing signature genes (genes
+	that we consider to have the greatest contribution to a feature's
+	functional signature) in an ADAGE node.
+
+	Parameters
+	-----------
+	std : float
+		Only consider "high weight" genes: genes with weights +/- `std`
+		standard deviations from the mean.
+		
+	Returns
+	-----------
+	functools.partial that accepts a feature weight vector of type
+	pandas.Series(float) and returns (set(), set()), the feature's
+	positive and negative gene signatures.
+	"""
+	def _gene_signature(feature_weight_vector, std):
+		"""This definition assumes that the weights in the feature
+		are normally distributed and we consider the genes above
+		and below some threshold to be more important.
+		"""
+		mean = feature_weight_vector.mean()
+		cutoff = std * feature_weight_vector.std()
+		positive_gene_signature = set(
+			feature_weight_vector[feature_weight_vector >= mean + cutoff].index)
+		negative_gene_signature = set(
+			feature_weight_vector[feature_weight_vector <= mean - cutoff].index)
+		return positive_gene_signature, negative_gene_signature
+	return partial(_gene_signature, std=std)
 
 def load_weight_matrix(path_to_weight_file, gene_ids):
 	"""Reads in the ADAGE model weight matrix.
@@ -50,7 +82,7 @@ def load_pathway_definitions(path_to_pathway_definitions):
 	tuple(set(str), dict(str -> set(str)))
 	(1) The set of genes present in at least 1 pathway definition
 	(2) A dictionary of pathway definitions, where a pathway (key) is mapped
-	    to a set of genes (value) 
+		to a set of genes (value) 
 	"""
 	pathway_definitions = pd.read_csv(path_to_pathway_definitions,
 		sep="\t", header=None, names=["pw", "size", "genes"], usecols=["pw", "genes"])
