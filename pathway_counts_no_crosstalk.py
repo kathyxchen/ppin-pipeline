@@ -29,7 +29,7 @@ import pandas as pd
 NUM_NODES = 300
 #OUTPUT_FILE = os.path.join("models_sigpathways_no_crosstalk",
 #                           "MODEL_PATHWAY_COVERAGE_no_crosstalk.txt")
-OUTPUT_FILE = "1227-pwc.txt"
+OUTPUT_FILE = "1229-pwc.txt"
 MODEL_PATHWAY_COVERAGE = {
     "corADAGE same": [],
     "corADAGE different": [],

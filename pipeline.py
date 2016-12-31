@@ -87,6 +87,7 @@ class ProcessModel:
 		self.use_all_genes = use_all_genes
 
 	def process(self, models_directory, current_model_filename):
+		print(current_model_filename)
 		full_filepath = os.path.join(models_directory, current_model_filename)
 		weight_matrix = utils.load_weight_matrix(full_filepath, self.gene_ids)
 		significant_pathways_df = pd.DataFrame(
@@ -96,12 +97,14 @@ class ProcessModel:
 			feature_df = mie.pathway_enrichment_without_crosstalk(
 				weight_matrix[feature], self.alpha, n_genes,
 				self.union_pathway_genes, self.pathway_definitions_map,
-				utils.define_gene_signature(weight_matrix[feature]),
-				self.use_all_genes)
-			feature_df.loc[:,"feature"] = pd.Series(
-				[feature] * len(feature_df.index), index=feature_df.index)
-			significant_pathways_df = pd.concat(
-				[significant_pathways_df, feature_df], axis=0)
+				utils.define_gene_signature(self.std_signature))
+			if feature_df is not None:
+				feature_df.loc[:,"feature"] = pd.Series(
+					[feature] * len(feature_df.index), index=feature_df.index)
+				significant_pathways_df = pd.concat(
+					[significant_pathways_df, feature_df], axis=0)
+			else:
+				print("No pathways in feature {0}".format(feature))
 		significant_pathways_df.reset_index(drop=True, inplace=True)
 		return (current_model_filename, significant_pathways_df)
 

@@ -12,10 +12,9 @@ import utils
 LOGGER = logging.getLogger("pathway_enrichment")
 
 def pathway_enrichment_without_crosstalk(feature_weight_vector, alpha, n_genes,
-                                        genes_in_pathway_definitions,
-                                        pathway_definitions_map,
-                                        defined_gene_signature,
-                                        use_all_genes=False):
+                                         genes_in_pathway_definitions,
+                                         pathway_definitions_map,
+                                         defined_gene_signature):
     """Identify positively and negatively enriched pathways in a constructed
     feature.
     
@@ -36,11 +35,6 @@ def pathway_enrichment_without_crosstalk(feature_weight_vector, alpha, n_genes,
         Accepts the `feature_weight_vector` as input. Provide a function to
         distinguish +/- signature genes (genes considered to have the greatest
         contribution to a feature's functional signature).
-    use_all_genes : bool (default=False)
-        The crosstalk removal procedure will be applied to gene signatures
-        (the set of genes considered positive or negative high weight).
-        If `use_all_genes=True`, crosstalk removal will also be applied to
-        genes outside of any signature (termed *remaining* genes).    
     
     Returns
     -----------
@@ -59,10 +53,10 @@ def pathway_enrichment_without_crosstalk(feature_weight_vector, alpha, n_genes,
     new_pathway_definitions = {}
     pathway_index_map = utils.index_element_map(pathway_definitions_map.keys())
     
-    new_pathway_definitions = _remove_crosstalk_and_update(
-        gene_signature, pathway_index_map, pathway_definitions_map,
-        new_pathway_definitions)
-    
+    #new_pathway_definitions = _remove_crosstalk_and_update(
+    #    gene_signature, pathway_index_map, pathway_definitions_map,
+    #    new_pathway_definitions)
+    '''
     remaining_genes = genes_in_pathway_definitions - gene_signature
     if use_all_genes:
         new_pathway_definitions = _remove_crosstalk_and_update(
@@ -75,7 +69,22 @@ def pathway_enrichment_without_crosstalk(feature_weight_vector, alpha, n_genes,
             else:
                 new_pathway_definitions[pathway] |= (set(gene_list) &
                     remaining_genes)
+    '''
+    row_names = list(genes_in_pathway_definitions)
+    row_index_map = utils.index_element_map(row_names)
+    membership_matrix = initialize_membership_matrix(
+        row_names, pathway_definitions_map)
 
+    remaining_genes = genes_in_pathway_definitions - gene_signature
+    crosstalk_removed_pathways = maximum_impact_estimation(membership_matrix)
+    new_pathway_definitions = update_pathway_definitions(
+        gene_signature,
+        crosstalk_removed_pathways, row_index_map, pathway_index_map,
+        new_pathway_definitions)
+    for pathway, gene_list in pathway_definitions_map.items():
+        if pathway in new_pathway_definitions:
+            new_pathway_definitions[pathway] |= (set(gene_list) & remaining_genes)
+    
     pathway_positive_series = single_side_pathway_enrichment(
         new_pathway_definitions, positive_gene_signature, n_genes)
     pathway_negative_series = single_side_pathway_enrichment(
@@ -178,7 +187,7 @@ def maximum_impact_estimation(membership_matrix):
         # pathway's probability.
         if denominator < 1e-300:
             denominator = 1e-300
-        conditional_pathway_pr = gene_membership / denominator
+        conditional_pathway_pr = np.multiply(gene_membership, pr_final) / denominator
         pathway_index = np.argmax(conditional_pathway_pr)
         if pathway_index not in new_pathway_definitions:
             new_pathway_definitions[pathway_index] = []
@@ -259,7 +268,8 @@ def replace_zeros(arr, default_min_value):
     arr[arr == 0] = closest_to_zero
     return arr
 
-def update_pathway_definitions(index_pathway_definitions,
+def update_pathway_definitions(gene_signature,
+                               index_pathway_definitions,
                                gene_index_map, pathway_index_map,
                                current_pathway_definitions):
     for pathway_index, list_gene_indices in index_pathway_definitions.items():
@@ -267,7 +277,7 @@ def update_pathway_definitions(index_pathway_definitions,
         if pathway not in current_pathway_definitions:
             current_pathway_definitions[pathway] = set()
         genes = [gene_index_map[index] for index in list_gene_indices]
-        current_pathway_definitions[pathway] |= set(genes)
+        current_pathway_definitions[pathway] |= (set(genes) & gene_signature)
     return current_pathway_definitions
 
 def single_side_pathway_enrichment(pathway_definitions, gene_signature, n_genes):
