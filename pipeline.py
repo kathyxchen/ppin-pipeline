@@ -95,9 +95,8 @@ class ProcessModel:
 		n_genes = len(self.gene_ids)
 		for feature in weight_matrix:
 			feature_df = mie.pathway_enrichment_without_crosstalk(
-				weight_matrix[feature], self.alpha, n_genes,
-				self.union_pathway_genes, self.pathway_definitions_map,
-				utils.define_gene_signature(self.std_signature))
+				weight_matrix[feature], self.alpha, self.std_signature, n_genes,
+				self.union_pathway_genes, self.pathway_definitions_map)
 			if feature_df is not None:
 				feature_df.loc[:,"feature"] = pd.Series(
 					[feature] * len(feature_df.index), index=feature_df.index)

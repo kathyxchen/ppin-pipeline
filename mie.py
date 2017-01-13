@@ -11,10 +11,10 @@ import utils
 
 LOGGER = logging.getLogger("pathway_enrichment")
 
-def pathway_enrichment_without_crosstalk(feature_weight_vector, alpha, n_genes,
+def pathway_enrichment_without_crosstalk(feature_weight_vector,
+                                         alpha, std, n_genes,
                                          genes_in_pathway_definitions,
-                                         pathway_definitions_map,
-                                         defined_gene_signature):
+                                         pathway_definitions_map):
     """Identify positively and negatively enriched pathways in a constructed
     feature.
     
@@ -24,6 +24,9 @@ def pathway_enrichment_without_crosstalk(feature_weight_vector, alpha, n_genes,
         A vector containing gene weights
     alpha : float
         Significance level for pathway enrichment.
+    std : float
+        Only consider "high weight" genes: genes with weights +/- `std`
+        standard deviations from the mean.
     n_genes : int
         The total number of genes in the compendium.
     genes_in_pathway_definitions : set(str)
@@ -31,17 +34,18 @@ def pathway_enrichment_without_crosstalk(feature_weight_vector, alpha, n_genes,
     pathway_definitions_map : dict(str -> list(str))
         Pathway definitions, pre-crosstalk-removal. A pathway (key) is defined
         by a list of genes (value).
-    defined_gene_signature : functools.partial callable, returns (set(), set())
-        Accepts the `feature_weight_vector` as input. Provide a function to
-        distinguish +/- signature genes (genes considered to have the greatest
-        contribution to a feature's functional signature).
     
     Returns
     -----------
     pandas.DataFrame | None
     """
-    positive_gene_signature, negative_gene_signature = defined_gene_signature(
-        feature_weight_vector)
+    mean = feature_weight_vector.mean()
+    cutoff = std * feature_weight_vector.std()
+    positive_gene_signature = set(
+        feature_weight_vector[feature_weight_vector >= mean + cutoff].index)
+    negative_gene_signature = set(
+        feature_weight_vector[feature_weight_vector <= mean - cutoff].index)
+        
     gene_signature = ((positive_gene_signature | negative_gene_signature) & 
                       genes_in_pathway_definitions)
 
@@ -53,23 +57,6 @@ def pathway_enrichment_without_crosstalk(feature_weight_vector, alpha, n_genes,
     new_pathway_definitions = {}
     pathway_index_map = utils.index_element_map(pathway_definitions_map.keys())
     
-    #new_pathway_definitions = _remove_crosstalk_and_update(
-    #    gene_signature, pathway_index_map, pathway_definitions_map,
-    #    new_pathway_definitions)
-    '''
-    remaining_genes = genes_in_pathway_definitions - gene_signature
-    if use_all_genes:
-        new_pathway_definitions = _remove_crosstalk_and_update(
-            remaining_genes, pathway_index_map, pathway_definitions_map,
-            new_pathway_definitions)
-    else:
-        for pathway, gene_list in pathway_definitions_map.items():
-            if pathway not in new_pathway_definitions:
-                new_pathway_definitions[pathway] = set(gene_list)
-            else:
-                new_pathway_definitions[pathway] |= (set(gene_list) &
-                    remaining_genes)
-    '''
     row_names = list(genes_in_pathway_definitions)
     row_index_map = utils.index_element_map(row_names)
     membership_matrix = initialize_membership_matrix(
@@ -77,7 +64,7 @@ def pathway_enrichment_without_crosstalk(feature_weight_vector, alpha, n_genes,
 
     remaining_genes = genes_in_pathway_definitions - gene_signature
     crosstalk_removed_pathways = maximum_impact_estimation(membership_matrix)
-    new_pathway_definitions = update_pathway_definitions(
+    new_pathway_definitions = _update_pathway_definitions(
         gene_signature,
         crosstalk_removed_pathways, row_index_map, pathway_index_map,
         new_pathway_definitions)
@@ -97,21 +84,6 @@ def pathway_enrichment_without_crosstalk(feature_weight_vector, alpha, n_genes,
     side_information.name = "side"
     return _significant_pathways_dataframe(
         pvalue_information, side_information, alpha)
-
-def _remove_crosstalk_and_update(genes,
-                                 pathway_index_map,
-                                 pathway_definitions_map,
-                                 current_pathway_definitions):
-    row_names = list(genes)
-    row_index_map = utils.index_element_map(row_names)
-    membership_matrix = initialize_membership_matrix(
-        row_names, pathway_definitions_map)
-
-    crosstalk_removed_pathways = maximum_impact_estimation(membership_matrix)
-    new_pathway_definitions = update_pathway_definitions(
-        crosstalk_removed_pathways, row_index_map, pathway_index_map,
-        current_pathway_definitions)
-    return new_pathway_definitions
 
 def _significant_pathways_dataframe(pvalue_information,
                                     side_information,
@@ -160,14 +132,14 @@ def maximum_impact_estimation(membership_matrix):
     difference = np.abs(1. - np.sum(pr_0))
     assert difference < 1e-12, "Probabilities sum to {0}.".format(np.sum(pr_0))
 
-    pr_1 = update_probabilities(pr_0, membership_matrix)
+    pr_1 = _update_probabilities(pr_0, membership_matrix)
     epsilon = np.linalg.norm(pr_1 - pr_0)/100.
     
     pr_old = pr_1
     check_for_convergence = epsilon
     i = 0  # for logging
     while epsilon > 0. and (check_for_convergence >= epsilon):
-        pr_new = update_probabilities(pr_old, membership_matrix)
+        pr_new = _update_probabilities(pr_old, membership_matrix)
         check_for_convergence = np.linalg.norm(pr_new - pr_old)
         pr_old = pr_new
         i += 1
@@ -194,7 +166,7 @@ def maximum_impact_estimation(membership_matrix):
         new_pathway_definitions[pathway_index].append(gene_index)
     return new_pathway_definitions
 
-def update_probabilities(pr, membership_matrix):
+def _update_probabilities(pr, membership_matrix):
     """Updates the probability vector for each iteration of the
     expectation maximum algorithm in maximum impact estimation.
     
@@ -225,7 +197,7 @@ def update_probabilities(pr, membership_matrix):
         cutoff = 1e-150 / k
         log_cutoff = np.log(cutoff)
 
-        weighted_pathway_col_sums = replace_zeros(
+        weighted_pathway_col_sums = _replace_zeros(
             weighted_pathway_col_sums, cutoff)
         log_weighted_col_sums = np.log(weighted_pathway_col_sums)
         log_weighted_col_sums -= np.max(log_weighted_col_sums)
@@ -249,7 +221,7 @@ def update_probabilities(pr, membership_matrix):
            np.sum(new_pr))
     return new_pr
 
-def replace_zeros(arr, default_min_value):
+def _replace_zeros(arr, default_min_value):
     """Substitute 0s in the list with a near-zero value.
 
     Parameters
@@ -268,10 +240,9 @@ def replace_zeros(arr, default_min_value):
     arr[arr == 0] = closest_to_zero
     return arr
 
-def update_pathway_definitions(gene_signature,
-                               index_pathway_definitions,
-                               gene_index_map, pathway_index_map,
-                               current_pathway_definitions):
+def _update_pathway_definitions(gene_signature, index_pathway_definitions,
+                                gene_index_map, pathway_index_map,
+                                current_pathway_definitions):
     for pathway_index, list_gene_indices in index_pathway_definitions.items():
         pathway = pathway_index_map[pathway_index]
         if pathway not in current_pathway_definitions:
