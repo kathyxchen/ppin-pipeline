@@ -10,12 +10,62 @@ import utils
 
 LOGGER = logging.getLogger("pathway_enrichment")
 
+def pathway_enrichment_with_crosstalk(node_weight_vector, alpha, n_genes,
+                                      genes_in_pathway_definitions,
+                                      pathway_definitions_map):
+    """Identify positively and negatively enriched pathways in a mode
+    when crosstalk has _not_ been removed.
+    
+    Parameters
+    -----------
+    node_weight_vector : pandas.Series(float), shape = n
+        A vector containing gene weights
+    alpha : float
+        Significance level for pathway enrichment.
+    n_genes : int
+        The total number of genes in the compendium.
+    genes_in_pathway_definitions : set(str)
+        The union of all genes in the list of pathway definitions
+    pathway_definitions_map : dict(str -> list(str))
+        Pathway definitions, pre-crosstalk-removal. A pathway (key) is defined
+        by a list of genes (value).
+    
+    Returns
+    -----------
+    pandas.DataFrame | None if 0 genes meet the criterion for high weight in
+                            this node.
+    """
+    mean = node_weight_vector.mean()
+    cutoff = std * node_weight_vector.std()
+    positive_gene_signature = set(
+        node_weight_vector[node_weight_vector >= mean + cutoff].index)
+    negative_gene_signature = set(
+        node_weight_vector[node_weight_vector <= mean - cutoff].index)
+        
+    gene_signature = ((positive_gene_signature | negative_gene_signature) & 
+                      genes_in_pathway_definitions)
+
+    if not gene_signature:
+        return None
+
+    pathway_positive_series = single_side_pathway_enrichment(
+        pathway_definitions_map, positive_gene_signature, n_genes)
+    pathway_negative_series = single_side_pathway_enrichment(
+        pathway_definitions_map, negative_gene_signature, n_genes)
+    pvalue_information = pathway_positive_series.append(pathway_negative_series)
+
+    side_information = pd.Series(["pos"] * len(pathway_positive_series)).append(
+        pd.Series(["neg"] * len(pathway_negative_series)))
+    side_information.index = pvalue_information.index
+    side_information.name = "side"
+    return _significant_pathways_dataframe(
+        pvalue_information, side_information, alpha)
+
 def pathway_enrichment_without_crosstalk(node_weight_vector,
                                          alpha, std, n_genes,
                                          genes_in_pathway_definitions,
                                          pathway_definitions_map):
-    """Identify positively and negatively enriched pathways in a constructed
-    node.
+    """Identify positively and negatively enriched pathways in a node
     
     Parameters
     -----------
@@ -36,7 +86,7 @@ def pathway_enrichment_without_crosstalk(node_weight_vector,
     
     Returns
     -----------
-    pandas.DataFrame | None if no genes meet the criterion for high weight in
+    pandas.DataFrame | None if 0 genes meet the criterion for high weight in
                             this node.
     """
     mean = node_weight_vector.mean()
@@ -66,7 +116,7 @@ def pathway_enrichment_without_crosstalk(node_weight_vector,
         row_names, pathway_definitions_map)
 
     crosstalk_removed_pathways = maximum_impact_estimation(membership_matrix)
-    new_pathway_definitions = _update_pathway_definitions(
+    new_pathway_definitions = _no_crosstalk_pathway_definitions(
         gene_signature, crosstalk_removed_pathways,
         row_index_map, pathway_index_map)
     for pathway, gene_list in pathway_definitions_map.items():
@@ -78,55 +128,13 @@ def pathway_enrichment_without_crosstalk(node_weight_vector,
     pathway_negative_series = single_side_pathway_enrichment(
         new_pathway_definitions, negative_gene_signature, n_genes)
     pvalue_information = pathway_positive_series.append(pathway_negative_series)
-
+    
     side_information = pd.Series(["pos"] * len(pathway_positive_series)).append(
         pd.Series(["neg"] * len(pathway_negative_series)))
     side_information.index = pvalue_information.index
     side_information.name = "side"
     return _significant_pathways_dataframe(
         pvalue_information, side_information, alpha)
-
-def _significant_pathways_dataframe(pvalue_information,
-                                    side_information,
-                                    alpha):
-    """Output the pandas.DataFrame of the pathways significant in each node.
-    
-    Parameters
-    -----------
-    node_weight_vector : pandas.Series(float), shape = n
-        A vector containing gene weights
-    alpha : float
-        Significance level for pathway enrichment.
-    std : float
-        Only consider "high weight" genes: genes with weights +/- `std`
-        standard deviations from the mean.
-    n_genes : int
-        The total number of genes in the compendium.
-    genes_in_pathway_definitions : set(str)
-        The union of all genes in the list of pathway definitions
-    pathway_definitions_map : dict(str -> list(str))
-        Pathway definitions, pre-crosstalk-removal. A pathway (key) is defined
-        by a list of genes (value).
-    
-    Returns
-    -----------
-    pandas.DataFrame | None if no genes meet the criterion for high weight in
-                            this node.
-    """
-    significant_pathways = pd.concat(
-        [pvalue_information, side_information], axis=1)
-    below_alpha, fdr_values, _, _ = multipletests(
-        significant_pathways["p-value"], alpha=alpha, method="fdr_bh")
-    below_alpha = pd.Series(
-        below_alpha, index=pvalue_information.index, name="pass")
-    fdr_values = pd.Series(
-        fdr_values, index=pvalue_information.index, name="padjust")
-    significant_pathways = pd.concat(
-        [significant_pathways, below_alpha, fdr_values], axis=1)
-    significant_pathways = significant_pathways[significant_pathways["pass"]]
-    significant_pathways.drop("pass", axis=1, inplace=True)
-    significant_pathways.loc[:,"pathway"] = significant_pathways.index
-    return significant_pathways
 
 def maximum_impact_estimation(membership_matrix):
     """Determines the underlying pathway impact matrix:
@@ -152,8 +160,7 @@ def maximum_impact_estimation(membership_matrix):
     # membership matrix normalized by the sum of the entire membership matrix.
     # The probability at some index j in the vector represents the likelihood
     # that a pathway (column) j is defined by this set of genes (rows).
-    pr_0 = np.longdouble(np.sum(membership_matrix, axis=0) / 
-                         np.sum(membership_matrix))
+    pr_0 = np.sum(membership_matrix, axis=0) / np.sum(membership_matrix)
     difference = np.abs(1. - np.sum(pr_0))
     assert difference < 1e-12, "Probabilities sum to {0}.".format(np.sum(pr_0))
 
@@ -178,18 +185,63 @@ def maximum_impact_estimation(membership_matrix):
         gene_membership = membership_matrix[gene_index]
         denominator = np.dot(gene_membership, pr_final)
         # Approximation to prevent divide by zero warning.
-        # Since we are only looking for the most probable pathway in which a
+        # Since we are only looking for the _most_ probable pathway in which a
         # gene contributes its maximum impact, precision is not as important
         # as maintaining the relative differences between each
         # pathway's probability.
         if denominator < 1e-300:
             denominator = 1e-300
-        conditional_pathway_pr = np.multiply(gene_membership, pr_final) / denominator
+        conditional_pathway_pr = (np.multiply(gene_membership, pr_final) /
+            denominator)
         pathway_index = np.argmax(conditional_pathway_pr)
         if pathway_index not in new_pathway_definitions:
             new_pathway_definitions[pathway_index] = []
         new_pathway_definitions[pathway_index].append(gene_index)
     return new_pathway_definitions
+
+def single_side_pathway_enrichment(pathway_definitions, gene_signature, n_genes):
+    """Identify enriched pathways using the Fisher's exact test for significance
+    on a given pathway definition and target gene signature.
+    
+    Parameters
+    -----------
+    pathway_definitions : dict(str -> set(str))
+        Pathway definitions, *post-crosstalk*-removal. A pathway (key) is
+        defined by a list of genes (value). Each gene is only
+        associated with one pathway.
+    gene_signature : list(str)
+        The set of genes we consider to be enriched in a node.
+    n_genes : int
+        The total number of genes that were considered in the unsupervised
+        model.
+    
+    Returns
+    -----------
+    pandas.Series, for each pathway, the p-value from applying the Fisher's
+                   exact test.
+    """
+    pvalues_list = []
+    for pathway, definition in pathway_definitions.items():
+        both_definition_and_signature = len(definition & gene_signature)
+        in_definition_not_signature = (len(definition) -
+            both_definition_and_signature)
+        in_signature_not_definition = (len(gene_signature) -
+            both_definition_and_signature)
+        neither_definition_nor_signature = (n_genes -
+            both_definition_and_signature - in_definition_not_signature -
+            in_signature_not_definition)
+
+        contingency_table = np.array(
+            [[both_definition_and_signature, in_signature_not_definition],
+            [in_definition_not_signature, neither_definition_nor_signature]])
+        
+        _, pvalue = stats.fisher_exact(
+            contingency_table, alternative="greater")
+        pvalues_list.append(pvalue)
+    pvalues_series = pd.Series(
+        pvalues_list, index=pathway_definitions.keys(), name="p-value")
+    return pvalues_series
+
 
 def _update_probabilities(pr, membership_matrix):
     """Updates the probability vector for each iteration of the
@@ -246,27 +298,30 @@ def _update_probabilities(pr, membership_matrix):
            np.sum(new_pr))
     return new_pr
 
-def _replace_zeros(arr, default_min_value):
-    """Substitute 0s in the list with a near-zero value.
+
+
+def _no_crosstalk_pathway_definitions(gene_signature, index_pathway_definitions,
+                                      gene_index_map, pathway_index_map):
+    """Returns pathway definitions after maximum impact estimation has been
+    applied to remove pathway crosstalk.
 
     Parameters
     -----------
-    arr : numpy.ndarray
-    default_min_value : float
-        If the smallest non-zero element in `arr` is greater than the default,
-        use the default instead.
+    gene_signature : set(str)
+        Genes considered "high weight" in the node.
+    index_pathway_definitions : dict(int -> list(int))
+        A mapping from a pathway index to a list of gene indices
+    gene_index_map : dict(int -> str)
+        Gene index -> gene name for converting the gene index list in
+        `index_pathway_definitions`
+    pathway_index_map : dict(int -> str)
+        Pathway index -> pathway name for converting the pathway index key in
+        `index_pathway_definitions`
 
     Returns
     -----------
-    numpy.ndarray
+    dict(str -> set(str)), a pathway mapped to a set of genes
     """
-    min_nonzero_value = min(default_min_value, np.min(arr[arr > 0]))
-    closest_to_zero = np.nextafter(min_nonzero_value, min_nonzero_value - 1)
-    arr[arr == 0] = closest_to_zero
-    return arr
-
-def _update_pathway_definitions(gene_signature, index_pathway_definitions,
-                                gene_index_map, pathway_index_map):
     current_pathway_definitions = {}
     for pathway_index, list_gene_indices in index_pathway_definitions.items():
         pathway = pathway_index_map[pathway_index]
@@ -275,48 +330,6 @@ def _update_pathway_definitions(gene_signature, index_pathway_definitions,
         genes = [gene_index_map[index] for index in list_gene_indices]
         current_pathway_definitions[pathway] |= (set(genes) & gene_signature)
     return current_pathway_definitions
-
-def single_side_pathway_enrichment(pathway_definitions, gene_signature, n_genes):
-    """Identify enriched pathways using the Fisher's exact test for significance
-    on a given pathway definition and target gene signature.
-    
-    Parameters
-    -----------
-    pathway_definitions : dict(str -> list(str))
-        Pathway definitions, *post-crosstalk*-removal. A pathway (key) is
-        defined by a list of genes (value). Each gene is only
-        associated with one pathway.
-    gene_signature : list(str)
-        The set of genes we consider to be enriched in a node.
-    n_genes : int
-        The total number of genes that were considered in the unsupervised
-        model.
-    
-    Returns
-    -----------
-    pandas.Series, for each pathway, the p-value from applying the Fisher's
-                   exact test.
-    """
-    pvalues_list = []
-    for pathway, definition in pathway_definitions.items():
-        both_definition_and_signature = len(definition & gene_signature)
-        in_definition_not_signature = (len(definition) -
-            both_definition_and_signature)
-        in_signature_not_definition = (len(gene_signature) -
-            both_definition_and_signature)
-        neither_definition_nor_signature = (n_genes -
-            both_definition_and_signature - in_definition_not_signature -
-            in_signature_not_definition)
-        contingency_table = np.array(
-            [[both_definition_and_signature, in_signature_not_definition],
-            [in_definition_not_signature, neither_definition_nor_signature]])
-        
-        _, pvalue = stats.fisher_exact(
-            contingency_table, alternative="greater")
-        pvalues_list.append(pvalue)
-    pvalues_series = pd.Series(
-        pvalues_list, index=pathway_definitions.keys(), name="p-value")
-    return pvalues_series
 
 def _initialize_membership_matrix(gene_row_names, pathway_definitions_map):
     """Create the binary gene-to-pathway membership matrix that
@@ -341,52 +354,59 @@ def _initialize_membership_matrix(gene_row_names, pathway_definitions_map):
     membership = np.array(membership).astype("float").T
     return membership
 
-def pathway_enrichment_with_crosstalk(node_weight_vector, alpha, n_genes,
-                                      genes_in_pathway_definitions,
-                                      pathway_definitions_map,
-                                      defined_gene_signature):
-    """Identify positively and negatively enriched pathways in a constructed
-    node.
+def _significant_pathways_dataframe(pvalue_information,
+                                    side_information,
+                                    alpha):
+    """Output a pandas.DataFrame reporting on pathways significant in an
+    ADAGE model node.
     
     Parameters
     -----------
-    node_weight_vector : pandas.Series(float), shape = n
-        A vector containing gene weights
+    pvalue_information : pandas.Series(float), shape = x
+        p-values associated with a pathway's +/- significance
+        in a node. 
+    side_information : pandas.Series(str), shape = x
+        TODO.
     alpha : float
         Significance level for pathway enrichment.
-    n_genes : int
-        The total number of genes in the compendium.
-    genes_in_pathway_definitions : set(str)
-        The union of all genes in the list of pathway definitions
-    pathway_definitions_map : dict(str -> list(str))
-        Pathway definitions, pre-crosstalk-removal. A pathway (key) is defined
-        by a list of genes (value).
-    defined_gene_signature : functools.partial callable, returns (set(), set())
-        Accepts the `node_weight_vector` as input. Provide a function to
-        distinguish +/- signature genes (genes considered to have the greatest
-        contribution to a node's functional signature).
     
     Returns
     -----------
-    pandas.DataFrame | None
+    pandas.DataFrame
     """
-    positive_gene_signature, negative_gene_signature = defined_gene_signature(
-        node_weight_vector)
-    gene_signature = ((positive_gene_signature | negative_gene_signature) & 
-                      genes_in_pathway_definitions)
+    significant_pathways = pd.concat(
+        [pvalue_information, side_information], axis=1)
+    below_alpha, fdr_values, _, _ = multipletests(
+        significant_pathways["p-value"], alpha=alpha, method="fdr_bh")
+    below_alpha = pd.Series(
+        below_alpha, index=pvalue_information.index, name="pass")
+    fdr_values = pd.Series(
+        fdr_values, index=pvalue_information.index, name="padjust")
+    significant_pathways = pd.concat(
+        [significant_pathways, below_alpha, fdr_values], axis=1)
+    significant_pathways = significant_pathways[significant_pathways["pass"]]
+    significant_pathways.drop("pass", axis=1, inplace=True)
+    significant_pathways.loc[:,"pathway"] = significant_pathways.index
+    return significant_pathways
 
-    if not gene_signature:
-        return None
 
-    pathway_positive_series = single_side_pathway_enrichment(
-        pathway_definitions_map, positive_gene_signature, n_genes)
-    pathway_negative_series = single_side_pathway_enrichment(
-        pathway_definitions_map, negative_gene_signature, n_genes)
-    pvalue_information = pathway_positive_series.append(pathway_negative_series)
+def _replace_zeros(arr, default_min_value):
+    """Substitute 0s in the list with a near-zero value.
 
-    side_information = pd.Series(["pos"] * len(pathway_positive_series)).append(
-        pd.Series(["neg"] * len(pathway_negative_series)))
-    side_information.index = pvalue_information.index
-    side_information.name = "side"
-    return _significant_pathways_dataframe(
-        pvalue_information, side_information, alpha)
+    Parameters
+    -----------
+    arr : numpy.ndarray
+    default_min_value : float
+        If the smallest non-zero element in `arr` is greater than the default,
+        use the default instead.
+
+    Returns
+    -----------
+    numpy.ndarray
+    """
+    min_nonzero_value = min(default_min_value, np.min(arr[arr > 0]))
+    closest_to_zero = np.nextafter(min_nonzero_value, min_nonzero_value - 1)
+    arr[arr == 0] = closest_to_zero
+    return arr
+
+
