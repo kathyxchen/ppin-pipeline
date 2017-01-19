@@ -11,52 +11,6 @@ import utils
 LOGGER = logging.getLogger("pathway_enrichment")
 
 
-def pathway_enrichment_with_crosstalk(node_weight_vector, alpha, n_genes,
-                                      genes_in_pathway_definitions,
-                                      pathway_definitions_map):
-    """Identify positively and negatively enriched pathways in a node
-    when crosstalk has _not_ been removed.
-
-    Parameters
-    -----------
-    node_weight_vector : pandas.Series(float), shape = n
-        A vector containing gene weights
-    alpha : float
-        Significance level for pathway enrichment.
-    n_genes : int
-        The total number of genes in the compendium.
-    genes_in_pathway_definitions : set(str)
-        The union of all genes in the list of pathway definitions
-    pathway_definitions_map : dict(str -> list(str))
-        Pathway definitions, pre-crosstalk-removal. A pathway (key) is defined
-        by a list of genes (value).
-
-    Returns
-    -----------
-    pandas.DataFrame | None if 0 genes meet the criterion for high weight in
-                            this node.
-    """
-    positive_gene_signature, negative_gene_signature = _get_gene_signatures(
-        node_weight_vector, std)
-    gene_signature = ((positive_gene_signature | negative_gene_signature) &
-                      genes_in_pathway_definitions)
-
-    if not gene_signature:
-        return None
-
-    pathway_positive_series = single_side_pathway_enrichment(
-        pathway_definitions_map, positive_gene_signature, n_genes)
-    pathway_negative_series = single_side_pathway_enrichment(
-        pathway_definitions_map, negative_gene_signature, n_genes)
-    pvalue_information = pathway_positive_series.append(
-        pathway_negative_series)
-
-    side_information = _label_with_side_significance(
-        pathway_positive_series, pathway_negative_series)
-    return _significant_pathways_dataframe(
-        pvalue_information, side_information, alpha)
-
-
 def pathway_enrichment_without_crosstalk(node_weight_vector,
                                          alpha, std, n_genes,
                                          genes_in_pathway_definitions,
